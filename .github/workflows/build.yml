@@ -1,60 +1,76 @@
-name: Build APK
+
+name: Universal ZIP to APK
 
 on:
   push:
+    paths:
+      - '**.zip'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Lets you upload gesture.zip as it is (from a phone) instead of the unzipped folder.
-      - name: Find the project folder
-        id: find
-        run: |
-          if [ -f settings.gradle ]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
-          else
-            z=$(ls ./*.zip 2>/dev/null | head -1)
-            if [ -z "$z" ]; then echo "No build.gradle and no .zip file found in the repository"; exit 1; fi
-            mkdir _proj && unzip -q "$z" -d _proj
-            g=$(find _proj -maxdepth 3 -name settings.gradle | head -1)
-            if [ -z "$g" ]; then echo "settings.gradle not found inside the zip"; exit 1; fi
-            echo "dir=$(dirname "$g")" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.9
-
-      - name: Build debug APK
-        working-directory: ${{ steps.find.outputs.dir }}
-        run: gradle assembleDebug --no-daemon
-
-      - name: Collect the APK
-        run: cp "${{ steps.find.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk" app-debug.apk
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GestureMacro-apk
-          path: app-debug.apk
-
-      - name: Publish app-debug.apk to Releases
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Extract ZIP project
+        shell: bash
         run: |
-          gh release create "build-${{ github.run_number }}" app-debug.apk \
-            --title "GestureMacro build ${{ github.run_number }}" \
-            --notes "Debug APK built from commit ${{ github.sha }}"
+          ZIP_FILE=$(find . -type f -iname "*.zip" \
+            -not -path "./.git/*" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found!"
+            exit 1
+          fi
+
+          echo "Found: $ZIP_FILE"
+
+          mkdir -p "$RUNNER_TEMP/project"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/project"
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          WRAPPER=$(find "$RUNNER_TEMP/project" \
+            -type f -name gradlew | head -n 1)
+
+          if [ -z "$WRAPPER" ]; then
+            echo "ERROR: Android Gradle wrapper not found."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$WRAPPER")
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: ${{ runner.temp }}/project/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+          
