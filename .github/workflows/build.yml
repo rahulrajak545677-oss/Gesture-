@@ -1,0 +1,60 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lets you upload gesture.zip as it is (from a phone) instead of the unzipped folder.
+      - name: Find the project folder
+        id: find
+        run: |
+          if [ -f settings.gradle ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            z=$(ls ./*.zip 2>/dev/null | head -1)
+            if [ -z "$z" ]; then echo "No build.gradle and no .zip file found in the repository"; exit 1; fi
+            mkdir _proj && unzip -q "$z" -d _proj
+            g=$(find _proj -maxdepth 3 -name settings.gradle | head -1)
+            if [ -z "$g" ]; then echo "settings.gradle not found inside the zip"; exit 1; fi
+            echo "dir=$(dirname "$g")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Collect the APK
+        run: cp "${{ steps.find.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk" app-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GestureMacro-apk
+          path: app-debug.apk
+
+      - name: Publish app-debug.apk to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" app-debug.apk \
+            --title "GestureMacro build ${{ github.run_number }}" \
+            --notes "Debug APK built from commit ${{ github.sha }}"
